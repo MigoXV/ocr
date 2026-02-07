@@ -50,17 +50,7 @@ def parse_translate_output(output: str) -> str:
 
 
 async def translate_one(async_client: AsyncOpenAI, semaphore: asyncio.Semaphore, idx: int, text: str) -> tuple[int, str]:
-    # Keep prompts explicitly framed as translation tasks so backend task routing
-    # can reliably classify them as TRANSLATE.
-    primary_prompt = (
-        f"这是翻译任务。请将下面文本翻译成{TRANSLATE_LANGUAGE}，"
-        "只输出译文，不要解释。\n"
-        f"原文：{text}"
-    )
-    retry_prompt = (
-        f"TRANSLATE TASK: Translate the following text to {TRANSLATE_LANGUAGE}. "
-        f"Output translation only.\n{text}"
-    )
+    primary_prompt = f"/translate {TRANSLATE_LANGUAGE} {text}"
 
     async with semaphore:
         try:
@@ -72,10 +62,7 @@ async def translate_one(async_client: AsyncOpenAI, semaphore: asyncio.Semaphore,
             detail = str(exc)
             if "request is not a translation task" not in detail:
                 return idx, text
-            response = await async_client.chat.completions.create(
-                messages=[{"role": "user", "content": retry_prompt}],
-                model=MODEL,
-            )
+            return idx, text
 
     content = response.choices[0].message.content
     if isinstance(content, str):

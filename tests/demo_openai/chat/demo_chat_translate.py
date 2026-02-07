@@ -3,7 +3,7 @@ import asyncio
 from openai import AsyncOpenAI
 from pydantic import TypeAdapter
 
-INPUT_TEXT = "请把这句话翻译成法语：今天阳光很好，我们去散步吧。"
+INPUT_TEXT = "/translate 法语 今天阳光很好，我们去散步吧。"
 MODEL = "deepseek-ocr2"
 
 

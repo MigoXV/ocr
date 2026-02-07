@@ -171,13 +171,18 @@ def _serialize_ocr_results(ocr_results: OCRResults) -> str:
 
 
 async def _run_translate_pipeline(user_text: str) -> str:
+    parsed = inferencer.parse_translate_command(user_text)
+    source_text = parsed[1] if parsed else user_text
+    if not source_text.strip():
+        source_text = user_text
+
     target_language = await inferencer.resolve_target_language(
         user_prompt=user_text,
         default_language=DEFAULT_TARGET_LANGUAGE,
         model=DEFAULT_PROMPT_PARSE_MODEL,
     )
     return await inferencer.translate_text(
-        text=user_text,
+        text=source_text,
         target_language=target_language,
     )
 
@@ -327,4 +332,3 @@ def _format_chunk_content(chunk_id: str, created: int, model: str, content: str)
         ],
     }
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
-

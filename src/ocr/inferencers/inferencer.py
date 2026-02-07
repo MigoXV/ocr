@@ -1,4 +1,5 @@
 import base64
+import re
 from typing import AsyncIterator, Literal, Optional
 
 from openai import AsyncOpenAI
@@ -83,29 +84,11 @@ class OpenAIOCRInferencer:
         default_language: str,
         model: Optional[str] = None,
     ) -> str:
-        if not user_prompt.strip():
+        del model
+        parsed = self.parse_translate_command(user_prompt)
+        if not parsed:
             return default_language
-
-        system_prompt = (
-            "你是一个提示词解析器。"
-            "请从用户输入中识别希望翻译到的目标语言。"
-            "只输出语言名称，不要输出任何解释、标点或其他内容。"
-            f"如果无法识别，则输出：{default_language}"
-        )
-        response = await self.client.chat.completions.create(
-            model=model if model else self.translate_model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt+" /no_think"},
-            ],
-            temperature=0,
-            max_tokens=32,
-            stream=False,
-        )
-        content = response.choices[0].message.content if response.choices else None
-        if not content:
-            return default_language
-        language = content.strip().strip("\"'`").splitlines()[0].strip()
+        language, _ = parsed
         return language if language else default_language
 
     async def resolve_chat_task(
@@ -114,41 +97,36 @@ class OpenAIOCRInferencer:
         has_image: bool,
         model: Optional[str] = None,
     ) -> Literal["ocr", "ocr_translate", "translate", "invalid"]:
+        del model
         prompt = user_prompt.strip()
         if not prompt:
             return "ocr" if has_image else "invalid"
 
+        is_translate = self.parse_translate_command(prompt) is not None
         if has_image:
-            system_prompt = (
-                "你是任务分类器。根据用户输入判断："
-                "OCR（仅识别原文）或 OCR_TRANSLATE（识别并翻译）。"
-                "只输出 OCR 或 OCR_TRANSLATE。"
-            )
-        else:
-            system_prompt = (
-                "你是任务分类器。根据用户输入判断是否是翻译请求。"
-                "若是翻译请求输出 TRANSLATE；否则输出 INVALID。"
-                "只输出 TRANSLATE 或 INVALID。"
-            )
+            return "ocr_translate" if is_translate else "ocr"
+        return "translate" if is_translate else "invalid"
 
-        response = await self.client.chat.completions.create(
-            model=model if model else self.translate_model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": prompt + " /no_think"},
-            ],
-            temperature=0,
-            max_tokens=16,
-            stream=False,
+    @staticmethod
+    def parse_translate_command(user_prompt: str) -> Optional[tuple[str, str]]:
+        """
+        Parse '/translate <language>' command at the beginning of prompt.
+        Returns (language, content_after_command) when matched, else None.
+        """
+        if not user_prompt:
+            return None
+        match = re.match(
+            r"^\s*/translate\s+([^\s]+)(?:\s+([\s\S]*))?\s*$",
+            user_prompt,
+            flags=re.IGNORECASE,
         )
-        content = response.choices[0].message.content if response.choices else None
-        if not content:
-            return "ocr" if has_image else "invalid"
-
-        decision = content.strip().upper()
-        if has_image:
-            return "ocr_translate" if "OCR_TRANSLATE" in decision else "ocr"
-        return "translate" if "TRANSLATE" in decision else "invalid"
+        if not match:
+            return None
+        language = (match.group(1) or "").strip()
+        content = (match.group(2) or "").strip()
+        if not language:
+            return None
+        return language, content
 
     async def summarize_translation_context(
         self,
