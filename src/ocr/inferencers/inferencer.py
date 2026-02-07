@@ -1,10 +1,34 @@
 import base64
+import json
+import logging
 import re
-from typing import AsyncIterator, Literal, Optional
+from typing import Any, AsyncIterator, Literal, Optional
 
 from openai import AsyncOpenAI
+from openai.types.chat import ChatCompletionMessageParam
+from openai.types.chat.chat_completion import ChatCompletion
+from openai.types.chat.chat_completion_chunk import ChatCompletionChunk
 
+from ocr.types.ocr_results import OCRResult, OCRResults
+
+from .ocr_parser import parse_raw_str, parse_raw_str_stream
 from .prompts import build_translate_system_prompt
+from .utils import (
+    build_chat_completion,
+    extract_last_role_text,
+    has_image,
+    iter_json_array_sse,
+    iter_ocr_item_jsons,
+    iter_single_json_item,
+    serialize_ocr_results,
+)
+
+logger = logging.getLogger(__name__)
+
+DEFAULT_TARGET_LANGUAGE = "法语"
+DEFAULT_PROMPT_PARSE_MODEL = "Qwen/Qwen3-8B"
+OCR_UX_MODEL = "deepseek-ocr2-ux"
+INTERNAL_OCR_MODEL = "deepseek-ocr2"
 
 
 class OpenAIOCRInferencer:
@@ -21,6 +45,100 @@ class OpenAIOCRInferencer:
         self.prompt = prompt
         self.translate_model = translate_model
         self.client = client or AsyncOpenAI()
+
+    async def create_chat_completion_response(
+        self,
+        messages: list[ChatCompletionMessageParam],
+        model: str,
+        max_tokens: Optional[int] = None,
+        stream: bool = False,
+    ) -> dict[str, Any] | AsyncIterator[str]:
+        if not messages:
+            raise ValueError("messages cannot be empty.")
+
+        has_image_input = has_image(messages)
+        user_text = extract_last_role_text(messages, role="user")
+        system_text = extract_last_role_text(messages, role="system")
+        request_mode = self._resolve_request_mode(model)
+        should_translate = self._should_translate(
+            system_text=system_text,
+            user_text=user_text,
+        )
+
+        if request_mode == "mt":
+            if has_image_input:
+                raise ValueError(
+                    f"Model '{model}' is text MT only and does not support image input."
+                )
+
+            translated = await self._run_translate_pipeline(
+                user_text=user_text,
+                system_text=system_text,
+                translate_model=model,
+            )
+            if stream:
+                return iter_json_array_sse(
+                    iter_single_json_item(translated),
+                    model=model,
+                )
+            content = json.dumps([translated], ensure_ascii=False)
+            return build_chat_completion(content=content, model=model)
+
+        if not has_image_input:
+            raise ValueError(
+                f"Model '{OCR_UX_MODEL}' requires image input and supports only OCR/OCR+translate."
+            )
+
+        if should_translate:
+            if stream:
+                upstream_stream = await self._create_upstream_stream(
+                    messages=messages,
+                    model=model,
+                    max_tokens=max_tokens,
+                )
+                ocr_results = await self._collect_ocr_results_from_stream(upstream_stream)
+                translated = await self._translate_ocr_results(
+                    ocr_results=ocr_results,
+                    user_text=user_text,
+                    system_text=system_text,
+                )
+                return iter_json_array_sse(iter_ocr_item_jsons(translated), model=model)
+
+            upstream_response = await self._create_upstream_non_stream(
+                messages=messages,
+                model=model,
+                max_tokens=max_tokens,
+            )
+            raw_text = self._extract_completion_text(upstream_response)
+            ocr_results = parse_raw_str(raw_text)
+            translated = await self._translate_ocr_results(
+                ocr_results=ocr_results,
+                user_text=user_text,
+                system_text=system_text,
+            )
+            content = serialize_ocr_results(translated)
+            return build_chat_completion(content=content, model=model)
+
+        if stream:
+            upstream_stream = await self._create_upstream_stream(
+                messages=messages,
+                model=model,
+                max_tokens=max_tokens,
+            )
+            return iter_json_array_sse(
+                self._iter_ocr_item_jsons_from_stream(upstream_stream),
+                model=model,
+            )
+
+        upstream_response = await self._create_upstream_non_stream(
+            messages=messages,
+            model=model,
+            max_tokens=max_tokens,
+        )
+        raw_text = self._extract_completion_text(upstream_response)
+        ocr_results = parse_raw_str(raw_text)
+        content = serialize_ocr_results(ocr_results)
+        return build_chat_completion(content=content, model=model)
 
     async def ocr_stream(self, image_bytes: bytes) -> AsyncIterator[str]:
         """Run OCR with image bytes and yield streamed text chunks."""
@@ -197,6 +315,160 @@ class OpenAIOCRInferencer:
         if not content:
             return text
         return content.strip()
+
+    async def _create_upstream_stream(
+        self,
+        messages: list[ChatCompletionMessageParam],
+        model: str,
+        max_tokens: Optional[int] = None,
+    ) -> AsyncIterator[ChatCompletionChunk]:
+        kwargs: dict[str, Any] = {
+            "messages": messages,
+            "model": self._map_upstream_model(model),
+            "stream": True,
+        }
+        if max_tokens is not None:
+            kwargs["max_tokens"] = max_tokens
+        return await self.client.chat.completions.create(**kwargs)
+
+    async def _create_upstream_non_stream(
+        self,
+        messages: list[ChatCompletionMessageParam],
+        model: str,
+        max_tokens: Optional[int] = None,
+    ) -> ChatCompletion:
+        kwargs: dict[str, Any] = {
+            "messages": messages,
+            "model": self._map_upstream_model(model),
+            "stream": False,
+        }
+        if max_tokens is not None:
+            kwargs["max_tokens"] = max_tokens
+        return await self.client.chat.completions.create(**kwargs)
+
+    @staticmethod
+    def _resolve_request_mode(model: str) -> str:
+        normalized = (model or "").strip()
+        if normalized == OCR_UX_MODEL:
+            return "ocr_ux"
+        if "-MT" in normalized.upper():
+            return "mt"
+        raise ValueError(
+            f"Unsupported model '{model}'. Use '{OCR_UX_MODEL}' for OCR/OCR+translate, "
+            "or a model containing '-MT' for text machine translation."
+        )
+
+    def _should_translate(self, system_text: str, user_text: str) -> bool:
+        if self.parse_translate_command(system_text):
+            return True
+        return self.parse_translate_command(user_text) is not None
+
+    @staticmethod
+    def _map_upstream_model(model: str) -> str:
+        if model == OCR_UX_MODEL:
+            return INTERNAL_OCR_MODEL
+        return model
+
+    @staticmethod
+    def _extract_completion_text(response: ChatCompletion) -> str:
+        if not response.choices:
+            return ""
+        message = response.choices[0].message
+        content = message.content if message else None
+        if not isinstance(content, str):
+            return ""
+        return content
+
+    async def _run_translate_pipeline(
+        self,
+        user_text: str,
+        system_text: str,
+        translate_model: str | None = None,
+    ) -> str:
+        parsed = self.parse_translate_command(user_text)
+        source_text = user_text
+        if parsed:
+            source_text = parsed[1]
+        if not source_text.strip():
+            source_text = user_text
+
+        target_language = await self.resolve_target_language(
+            user_prompt=user_text,
+            default_language=DEFAULT_TARGET_LANGUAGE,
+            system_prompt=system_text,
+            model=DEFAULT_PROMPT_PARSE_MODEL,
+        )
+        return await self.translate_text(
+            text=source_text,
+            target_language=target_language,
+            model=translate_model,
+        )
+
+    async def _collect_ocr_results_from_stream(
+        self,
+        chunks: AsyncIterator[ChatCompletionChunk],
+    ) -> OCRResults:
+        results: OCRResults = []
+        async for item in parse_raw_str_stream(self._iter_ocr_text(chunks)):
+            results.append(item)
+        return results
+
+    async def _translate_ocr_results(
+        self,
+        ocr_results: OCRResults,
+        user_text: str,
+        system_text: str,
+    ) -> OCRResults:
+        target_language = await self.resolve_target_language(
+            user_prompt=user_text,
+            default_language=DEFAULT_TARGET_LANGUAGE,
+            system_prompt=system_text,
+            model=DEFAULT_PROMPT_PARSE_MODEL,
+        )
+        full_context = "\n".join(item.ref for item in ocr_results)
+        system_prompt = await self.summarize_translation_context(
+            text=full_context,
+            target_language=target_language,
+            model=DEFAULT_PROMPT_PARSE_MODEL,
+        )
+
+        cache: dict[str, str] = {}
+        translated: OCRResults = []
+        for item in ocr_results:
+            source_text = item.ref
+            if source_text in cache:
+                target_text = cache[source_text]
+            else:
+                try:
+                    target_text = await self.translate_text(
+                        text=source_text,
+                        target_language=target_language,
+                        system_prompt=system_prompt,
+                    )
+                except Exception as exc:
+                    logger.warning("Translate failed for item '%s': %s", source_text, exc)
+                    target_text = source_text
+                cache[source_text] = target_text
+            translated.append(OCRResult(ref=target_text, det=item.det))
+        return translated
+
+    async def _iter_ocr_text(
+        self,
+        chunks: AsyncIterator[ChatCompletionChunk],
+    ) -> AsyncIterator[str]:
+        async for chunk in chunks:
+            if not chunk.choices:
+                continue
+            content = chunk.choices[0].delta.content
+            if content:
+                yield content
+
+    async def _iter_ocr_item_jsons_from_stream(
+        self,
+        chunks: AsyncIterator[ChatCompletionChunk],
+    ) -> AsyncIterator[str]:
+        async for item in parse_raw_str_stream(self._iter_ocr_text(chunks)):
+            yield json.dumps(item.model_dump(mode="json"), ensure_ascii=False)
 
     @staticmethod
     def _bytes_to_data_uri(image_bytes: bytes) -> str:
