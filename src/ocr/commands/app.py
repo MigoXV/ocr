@@ -3,11 +3,29 @@ import logging
 import typer
 import uvicorn
 from fastapi import FastAPI
+from fastapi.responses import RedirectResponse
 
-from ocr.apizi.v1 import router
+from ocr.api.v1 import router
 
 cli = typer.Typer(help="OCR service command line interface.")
 api_app = FastAPI(title="OCR Image Edit Service")
+
+
+@api_app.middleware("http")
+async def redirect_api_prefix(request, call_next):
+    path = request.url.path
+    if path == "/api":
+        target = "/"
+    elif path.startswith("/api/"):
+        target = path[len("/api") :]
+    else:
+        return await call_next(request)
+
+    if request.url.query:
+        target = f"{target}?{request.url.query}"
+    return RedirectResponse(url=target, status_code=307)
+
+
 api_app.include_router(router)
 
 
