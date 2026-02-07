@@ -27,13 +27,15 @@ def image_to_base64(image_path: str) -> str:
     return f"data:{mime_type};base64,{base64_data}"
 
 
-async def stream_to_text(stream) -> str:
+async def stream_to_text(stream, *, echo: bool = False) -> str:
     output = ""
     async for chunk in stream:
         if not chunk.choices:
             continue
         content = chunk.choices[0].delta.content
         if content:
+            if echo:
+                print(content, end="", flush=True)
             output += content
     return output
 
@@ -104,7 +106,9 @@ async def main() -> None:
         )
 
         adapter = TypeAdapter(list[OCRResult])
-        ocr_results = adapter.validate_json(await stream_to_text(ocr_stream))
+        print("=== STAGE: OCR_STREAM ===")
+        ocr_results = adapter.validate_json(await stream_to_text(ocr_stream, echo=True))
+        print("\n")
 
         print("=== STAGE: OCR ===")
         for idx, item in enumerate(ocr_results):
