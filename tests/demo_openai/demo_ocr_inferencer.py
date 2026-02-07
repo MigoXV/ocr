@@ -4,13 +4,13 @@ OCR inferencer 调用示例
 复用 demo_ocr 的后处理流程，仅将 OCR 请求封装到推理器类。
 """
 
+import asyncio
 import os
 import time
 
 from ocr.image.render import render_ocr_results
 from ocr.inferencers import OpenAIOCRInferencer
-from ocr.inferencers.ocr_parser import (get_plain_text, parse_plain_text,
-                                        parse_raw_str)
+from ocr.inferencers.ocr_parser import get_plain_text, parse_plain_text, parse_raw_str
 from ocr.utils import load_image
 
 TRANSLATE_MODEL = "tencent/Hunyuan-MT-7B"
@@ -21,7 +21,7 @@ OUTPUT_PATH = "data-bin/test-deepseek-ocr-inferencer" + time.strftime(
 )
 
 
-if __name__ == "__main__":
+async def main() -> None:
     os.makedirs(OUTPUT_PATH, exist_ok=True)
     image = load_image(INPUT_PATH).convert("RGB")
     with open(INPUT_PATH, "rb") as f:
@@ -32,7 +32,7 @@ if __name__ == "__main__":
     )
     # 启动ocr
     outputs = ""
-    for content in inferencer.ocr_stream(image_bytes):
+    async for content in inferencer.ocr_stream(image_bytes):
         print(content, end="", flush=True)
         outputs += content
     print("\n")
@@ -48,7 +48,7 @@ if __name__ == "__main__":
         text=plain_text, target_language=TARGET_LANGUAGE
     )
     outputs = ""
-    for chunk in translate_result_itr:
+    async for chunk in translate_result_itr:
         print(chunk, end="", flush=True)
         outputs += chunk
     print()
@@ -57,3 +57,7 @@ if __name__ == "__main__":
     rendered_translated_image = render_ocr_results(image, translate_results)
     rendered_translated_image.save(f"{OUTPUT_PATH}/result_covered_translated.jpg")
     print(f"结果已保存到: {OUTPUT_PATH}/result_covered_translated.jpg")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

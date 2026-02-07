@@ -1,13 +1,13 @@
-from dataclasses import dataclass
-from typing import List
+from __future__ import annotations
 
-import numpy as np
+from pydantic import BaseModel
 
 
-@dataclass
-class OCRResult:
+class OCRResult(BaseModel):
     ref: str
-    det: np.ndarray
+    # Normalized box for render path: [x1, y1, x2, y2]
+    # Stream parse path may carry raw shape: [[x1, y1, x2, y2], ...]
+    det: list[float] | list[list[int]]
 
 
-OCRResults = List[OCRResult]
+OCRResults = list[OCRResult]

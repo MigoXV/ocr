@@ -1,7 +1,7 @@
 import base64
-from typing import Iterator, Optional
+from typing import AsyncIterator, Optional
 
-from openai import OpenAI
+from openai import AsyncOpenAI
 
 from .prompts import build_translate_system_prompt
 
@@ -14,20 +14,20 @@ class OpenAIOCRInferencer:
         model: str = "deepseek-ocr2",
         prompt: str = "OCR this image.",
         translate_model: str = "tencent/Hunyuan-MT-7B",
-        client: Optional[OpenAI] = None,
+        client: Optional[AsyncOpenAI] = None,
     ) -> None:
         self.model = model
         self.prompt = prompt
         self.translate_model = translate_model
-        self.client = client or OpenAI()
+        self.client = client or AsyncOpenAI()
 
-    def ocr_stream(self, image_bytes: bytes) -> Iterator[str]:
+    async def ocr_stream(self, image_bytes: bytes) -> AsyncIterator[str]:
         """Run OCR with image bytes and yield streamed text chunks."""
         if not image_bytes:
             raise ValueError("image_bytes cannot be empty")
 
         image_url = self._bytes_to_data_uri(image_bytes)
-        response = self.client.chat.completions.create(
+        response = await self.client.chat.completions.create(
             messages=[
                 {
                     "role": "user",
@@ -41,23 +41,23 @@ class OpenAIOCRInferencer:
             stream=True,
         )
 
-        for chunk in response:
+        async for chunk in response:
             if not chunk.choices:
                 continue
             content = chunk.choices[0].delta.content
             if content:
                 yield content
 
-    def translate_stream(
+    async def translate_stream(
         self,
         text: str,
         target_language: str,
         model: Optional[str] = None,
         temperature: float = 0.3,
         max_tokens: int = 1024,
-    ) -> Iterator[str]:
+    ) -> AsyncIterator[str]:
         system_prompt = build_translate_system_prompt(target_language=target_language)
-        response = self.client.chat.completions.create(
+        response = await self.client.chat.completions.create(
             model=model if model else self.translate_model,
             messages=[
                 {"role": "system", "content": system_prompt},
@@ -67,12 +67,43 @@ class OpenAIOCRInferencer:
             max_tokens=max_tokens,
             stream=True,
         )
-        for chunk in response:
+        async for chunk in response:
             if not chunk.choices:
                 continue
             content = chunk.choices[0].delta.content
             if content:
                 yield content
+
+    async def resolve_target_language(
+        self,
+        user_prompt: str,
+        default_language: str,
+        model: Optional[str] = None,
+    ) -> str:
+        if not user_prompt.strip():
+            return default_language
+
+        system_prompt = (
+            "你是一个提示词解析器。"
+            "请从用户输入中识别希望翻译到的目标语言。"
+            "只输出语言名称，不要输出任何解释、标点或其他内容。"
+            f"如果无法识别，则输出：{default_language}"
+        )
+        response = await self.client.chat.completions.create(
+            model=model if model else self.translate_model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt+" /no_think"},
+            ],
+            temperature=0,
+            max_tokens=32,
+            stream=False,
+        )
+        content = response.choices[0].message.content if response.choices else None
+        if not content:
+            return default_language
+        language = content.strip().strip("\"'`").splitlines()[0].strip()
+        return language if language else default_language
 
     @staticmethod
     def _bytes_to_data_uri(image_bytes: bytes) -> str:
