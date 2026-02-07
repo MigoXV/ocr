@@ -1,11 +1,16 @@
 import json
 import logging
 import time
-from typing import Any, AsyncIterator
+from typing import Annotated, Any, AsyncIterator, Optional
 
-from fastapi import APIRouter, Body, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from openai import APIStatusError, AsyncOpenAI
+from openai.types.chat import (
+    ChatCompletionAudioParam,
+    ChatCompletionMessageParam,
+    ChatCompletionToolUnionParam,
+)
 from openai.types.chat.chat_completion import ChatCompletion
 from openai.types.chat.chat_completion_chunk import ChatCompletionChunk
 
@@ -15,7 +20,7 @@ from ocr.types.ocr_results import OCRResult, OCRResults
 
 router = APIRouter()
 client = AsyncOpenAI()
-inferencer = OpenAIOCRInferencer(client=client)
+_default_inferencer = OpenAIOCRInferencer(client=client)
 logger = logging.getLogger(__name__)
 
 DEFAULT_TARGET_LANGUAGE = "法语"
@@ -24,19 +29,81 @@ OCR_UX_MODEL = "deepseek-ocr2-ux"
 INTERNAL_OCR_MODEL = "deepseek-ocr2"
 
 
+Inferencer = OpenAIOCRInferencer
+
+
+def get_inferencer() -> Inferencer:
+    return _default_inferencer
+
 @router.post("/v1/chat/completions", response_model=None)
 async def create_chat_completion(
-    payload: dict[str, Any] = Body(...),
+    inferencer: Annotated[Inferencer, Depends(get_inferencer)],
+    messages: Annotated[list[ChatCompletionMessageParam], Body(..., embed=True)],
+    model: Annotated[str, Body(..., embed=True)],
+    audio: Annotated[Optional[ChatCompletionAudioParam], Body(embed=True)] = None,
+    tools: Annotated[Optional[list[ChatCompletionToolUnionParam]], Body(embed=True)] = None,
+    frequency_penalty: Annotated[Optional[float], Body(embed=True)] = None,
+    temperature: Annotated[Optional[float], Body(embed=True)] = None,
+    max_tokens: Annotated[Optional[int], Body(embed=True)] = None,
+    stream: Annotated[bool, Body(embed=True)] = False,
+    top_p: Annotated[Optional[float], Body(embed=True)] = None,
+    presence_penalty: Annotated[Optional[float], Body(embed=True)] = None,
+    n: Annotated[Optional[int], Body(embed=True)] = None,
+    stop: Annotated[Optional[str | list[str]], Body(embed=True)] = None,
+    logprobs: Annotated[Optional[bool], Body(embed=True)] = None,
+    top_logprobs: Annotated[Optional[int], Body(embed=True)] = None,
+    seed: Annotated[Optional[int], Body(embed=True)] = None,
+    user: Annotated[Optional[str], Body(embed=True)] = None,
+    tool_choice: Annotated[Optional[Any], Body(embed=True)] = None,
+    response_format: Annotated[Optional[dict[str, Any]], Body(embed=True)] = None,
+    stream_options: Annotated[Optional[dict[str, Any]], Body(embed=True)] = None,
 ) -> Any:
     try:
-        messages = _require_messages(payload)
+        if not messages:
+            raise HTTPException(status_code=400, detail="messages cannot be empty.")
         has_image = _has_image(messages)
         user_text = _extract_last_user_text(messages)
         system_text = _extract_last_system_text(messages)
-        stream = bool(payload.get("stream"))
-        model = str(payload.get("model") or OCR_UX_MODEL)
         request_mode = _resolve_request_mode(model)
-        should_translate = _should_translate(system_text=system_text, user_text=user_text)
+        should_translate = _should_translate(inferencer, system_text=system_text, user_text=user_text)
+
+        request_payload: dict[str, Any] = {
+            "messages": messages,
+            "model": model,
+            "stream": stream,
+        }
+        if audio is not None:
+            request_payload["audio"] = audio
+        if tools:
+            request_payload["tools"] = tools
+        if frequency_penalty is not None:
+            request_payload["frequency_penalty"] = frequency_penalty
+        if temperature is not None:
+            request_payload["temperature"] = temperature
+        if max_tokens is not None:
+            request_payload["max_tokens"] = max_tokens
+        if top_p is not None:
+            request_payload["top_p"] = top_p
+        if presence_penalty is not None:
+            request_payload["presence_penalty"] = presence_penalty
+        if n is not None:
+            request_payload["n"] = n
+        if stop is not None:
+            request_payload["stop"] = stop
+        if logprobs is not None:
+            request_payload["logprobs"] = logprobs
+        if top_logprobs is not None:
+            request_payload["top_logprobs"] = top_logprobs
+        if seed is not None:
+            request_payload["seed"] = seed
+        if user is not None:
+            request_payload["user"] = user
+        if tool_choice is not None:
+            request_payload["tool_choice"] = tool_choice
+        if response_format is not None:
+            request_payload["response_format"] = response_format
+        if stream_options is not None:
+            request_payload["stream_options"] = stream_options
 
         if request_mode == "mt":
             if has_image:
@@ -47,6 +114,7 @@ async def create_chat_completion(
                     ),
                 )
             translated = await _run_translate_pipeline(
+                inferencer=inferencer,
                 user_text=user_text,
                 system_text=system_text,
                 translate_model=model,
@@ -70,10 +138,11 @@ async def create_chat_completion(
 
         if should_translate:
             if stream:
-                upstream_stream = await _create_upstream_stream(payload)
+                upstream_stream = await _create_upstream_stream(request_payload)
                 ocr_results = await _collect_ocr_results_from_stream(upstream_stream)
                 translated = await _translate_ocr_results(
-                    ocr_results,
+                    inferencer=inferencer,
+                    ocr_results=ocr_results,
                     user_text=user_text,
                     system_text=system_text,
                 )
@@ -82,11 +151,12 @@ async def create_chat_completion(
                     media_type="text/event-stream",
                 )
 
-            upstream_response = await _create_upstream_non_stream(payload)
+            upstream_response = await _create_upstream_non_stream(request_payload)
             raw_text = _extract_completion_text(upstream_response)
             ocr_results = parse_raw_str(raw_text)
             translated = await _translate_ocr_results(
-                ocr_results,
+                inferencer=inferencer,
+                ocr_results=ocr_results,
                 user_text=user_text,
                 system_text=system_text,
             )
@@ -95,13 +165,13 @@ async def create_chat_completion(
 
         # OCR pipeline
         if stream:
-            upstream_stream = await _create_upstream_stream(payload)
+            upstream_stream = await _create_upstream_stream(request_payload)
             return StreamingResponse(
                 _iter_json_array_sse(_iter_ocr_item_jsons_from_stream(upstream_stream), model=model),
                 media_type="text/event-stream",
             )
 
-        upstream_response = await _create_upstream_non_stream(payload)
+        upstream_response = await _create_upstream_non_stream(request_payload)
         raw_text = _extract_completion_text(upstream_response)
         ocr_results = parse_raw_str(raw_text)
         content = _serialize_ocr_results(ocr_results)
@@ -122,13 +192,6 @@ async def create_chat_completion(
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
-def _require_messages(payload: dict[str, Any]) -> list[dict[str, Any]]:
-    messages = payload.get("messages")
-    if not isinstance(messages, list):
-        raise HTTPException(status_code=400, detail="messages must be a list.")
-    return [msg for msg in messages if isinstance(msg, dict)]
-
-
 def _resolve_request_mode(model: str) -> str:
     normalized = (model or "").strip()
     if normalized == OCR_UX_MODEL:
@@ -144,15 +207,21 @@ def _resolve_request_mode(model: str) -> str:
     )
 
 
-def _should_translate(system_text: str, user_text: str) -> bool:
+def _should_translate(inferencer: Inferencer, system_text: str, user_text: str) -> bool:
     if inferencer.parse_translate_command(system_text):
         return True
     return inferencer.parse_translate_command(user_text) is not None
 
 
-def _has_image(messages: list[dict[str, Any]]) -> bool:
+def _message_get(message: ChatCompletionMessageParam, key: str) -> Any:
+    if isinstance(message, dict):
+        return message.get(key)
+    return getattr(message, key, None)
+
+
+def _has_image(messages: list[ChatCompletionMessageParam]) -> bool:
     for message in messages:
-        content = message.get("content")
+        content = _message_get(message, "content")
         if isinstance(content, list):
             for part in content:
                 if isinstance(part, dict) and part.get("type") == "image_url":
@@ -160,11 +229,11 @@ def _has_image(messages: list[dict[str, Any]]) -> bool:
     return False
 
 
-def _extract_last_user_text(messages: list[dict[str, Any]]) -> str:
+def _extract_last_user_text(messages: list[ChatCompletionMessageParam]) -> str:
     for message in reversed(messages):
-        if message.get("role") != "user":
+        if _message_get(message, "role") != "user":
             continue
-        content = message.get("content")
+        content = _message_get(message, "content")
         if isinstance(content, str):
             return content.strip()
         if isinstance(content, list):
@@ -179,11 +248,11 @@ def _extract_last_user_text(messages: list[dict[str, Any]]) -> str:
     return ""
 
 
-def _extract_last_system_text(messages: list[dict[str, Any]]) -> str:
+def _extract_last_system_text(messages: list[ChatCompletionMessageParam]) -> str:
     for message in reversed(messages):
-        if message.get("role") != "system":
+        if _message_get(message, "role") != "system":
             continue
-        content = message.get("content")
+        content = _message_get(message, "content")
         if isinstance(content, str):
             return content.strip()
         if isinstance(content, list):
@@ -203,14 +272,14 @@ async def _create_upstream_stream(
 ) -> AsyncIterator[ChatCompletionChunk]:
     request_payload = dict(payload)
     request_payload["stream"] = True
-    request_payload["model"] = _map_upstream_model(str(request_payload.get("model") or OCR_UX_MODEL))
+    request_payload["model"] = _map_upstream_model(str(payload.get("model") or OCR_UX_MODEL))
     return await client.chat.completions.create(**request_payload)
 
 
 async def _create_upstream_non_stream(payload: dict[str, Any]) -> ChatCompletion:
     request_payload = dict(payload)
     request_payload["stream"] = False
-    request_payload["model"] = _map_upstream_model(str(request_payload.get("model") or OCR_UX_MODEL))
+    request_payload["model"] = _map_upstream_model(str(payload.get("model") or OCR_UX_MODEL))
     return await client.chat.completions.create(**request_payload)
 
 
@@ -238,6 +307,7 @@ def _serialize_ocr_results(ocr_results: OCRResults) -> str:
 
 
 async def _run_translate_pipeline(
+    inferencer: Inferencer,
     user_text: str,
     system_text: str,
     translate_model: str | None = None,
@@ -272,6 +342,7 @@ async def _collect_ocr_results_from_stream(
 
 
 async def _translate_ocr_results(
+    inferencer: Inferencer,
     ocr_results: OCRResults,
     user_text: str,
     system_text: str,
