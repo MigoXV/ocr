@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_TARGET_LANGUAGE = "法语"
 DEFAULT_PROMPT_PARSE_MODEL = "Qwen/Qwen3-8B"
 OCR_UX_MODEL = "deepseek-ocr2-ux"
+INTERNAL_OCR_MODEL = "deepseek-ocr2"
 
 
 @router.post("/v1/chat/completions", response_model=None)
@@ -202,13 +203,21 @@ async def _create_upstream_stream(
 ) -> AsyncIterator[ChatCompletionChunk]:
     request_payload = dict(payload)
     request_payload["stream"] = True
+    request_payload["model"] = _map_upstream_model(str(request_payload.get("model") or OCR_UX_MODEL))
     return await client.chat.completions.create(**request_payload)
 
 
 async def _create_upstream_non_stream(payload: dict[str, Any]) -> ChatCompletion:
     request_payload = dict(payload)
     request_payload["stream"] = False
+    request_payload["model"] = _map_upstream_model(str(request_payload.get("model") or OCR_UX_MODEL))
     return await client.chat.completions.create(**request_payload)
+
+
+def _map_upstream_model(model: str) -> str:
+    if model == OCR_UX_MODEL:
+        return INTERNAL_OCR_MODEL
+    return model
 
 
 def _extract_completion_text(response: ChatCompletion) -> str:
