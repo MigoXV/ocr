@@ -26,25 +26,18 @@ def has_image(messages: list[ChatCompletionMessageParam]) -> bool:
     return False
 
 
-def extract_last_role_text(
-    messages: list[ChatCompletionMessageParam],
-    role: str,
-) -> str:
-    for message in reversed(messages):
-        if message_get(message, "role") != role:
-            continue
-        content = message_get(message, "content")
-        if isinstance(content, str):
-            return content.strip()
-        if isinstance(content, list):
-            parts: list[str] = []
-            for part in content:
-                if isinstance(part, dict) and part.get("type") == "text":
-                    text = part.get("text")
-                    if isinstance(text, str):
-                        parts.append(text)
-            joined = "\n".join(part for part in parts if part.strip())
-            return joined.strip()
+def extract_message_text(message: ChatCompletionMessageParam) -> str:
+    content = message_get(message, "content")
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        parts: list[str] = []
+        for part in content:
+            if isinstance(part, dict) and part.get("type") == "text":
+                text = part.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+        return "\n".join(part for part in parts if part.strip()).strip()
     return ""
 
 

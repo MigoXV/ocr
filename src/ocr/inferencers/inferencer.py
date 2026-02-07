@@ -15,7 +15,7 @@ from .utils import (
     bytes_to_data_uri,
     build_chat_completion,
     extract_completion_text,
-    extract_last_role_text,
+    extract_message_text,
     has_image,
     iter_json_array_sse,
     iter_ocr_item_jsons,
@@ -56,13 +56,10 @@ class OpenAIOCRInferencer:
         max_tokens: Optional[int] = None,
         stream: bool = False,
     ) -> dict[str, Any] | AsyncIterator[str]:
-        if not messages:
-            raise ValueError("messages cannot be empty.")
-
         has_image_input = has_image(messages)
-        user_text = extract_last_role_text(messages, role="user")
-        system_text = extract_last_role_text(messages, role="system")
         request_mode = resolve_request_mode(model, ocr_ux_model=OCR_UX_MODEL)
+        system_text = extract_message_text(messages[0])
+        user_text = extract_message_text(messages[1])
         should_translate = self._should_translate(
             system_text=system_text,
             user_text=user_text,

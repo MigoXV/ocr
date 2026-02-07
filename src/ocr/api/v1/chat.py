@@ -27,12 +27,18 @@ async def create_chat_completion(
     stream: Annotated[bool, Body(embed=True)] = False,
 ) -> Any:
     try:
-        response = await inferencer.create_chat_completion_response(
-            messages=messages,
-            model=model,
-            max_tokens=max_tokens,
-            stream=stream,
-        )
+        try:
+            response = await inferencer.create_chat_completion_response(
+                messages=messages,
+                model=model,
+                max_tokens=max_tokens,
+                stream=stream,
+            )
+        except (IndexError, TypeError, KeyError, AttributeError) as exc:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid messages format. Expected fixed system/user template.",
+            ) from exc
         if stream:
             return StreamingResponse(response, media_type="text/event-stream")
         return response
