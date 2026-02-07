@@ -6,11 +6,7 @@ from typing import Annotated, Any, AsyncIterator, Optional
 from fastapi import APIRouter, Body, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from openai import APIStatusError, AsyncOpenAI
-from openai.types.chat import (
-    ChatCompletionAudioParam,
-    ChatCompletionMessageParam,
-    ChatCompletionToolUnionParam,
-)
+from openai.types.chat import ChatCompletionMessageParam
 from openai.types.chat.chat_completion import ChatCompletion
 from openai.types.chat.chat_completion_chunk import ChatCompletionChunk
 
