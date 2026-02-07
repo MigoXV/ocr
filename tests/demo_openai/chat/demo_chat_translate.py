@@ -4,7 +4,7 @@ from openai import AsyncOpenAI
 from pydantic import TypeAdapter
 
 INPUT_TEXT = "/translate 法语 今天阳光很好，我们去散步吧。"
-MODEL = "deepseek-ocr2"
+MODEL = "tencent/Hunyuan-MT-7B"
 
 
 async def main() -> None:

@@ -7,7 +7,7 @@ from pydantic import TypeAdapter
 from ocr.types.ocr_results import OCRResult
 
 INPUT_PATH = "data-bin/inputs/test01.jpg"
-MODEL = "deepseek-ocr2"
+MODEL = "deepseek-ocr2-ux"
 PROMPT = "OCR this image."
 
 

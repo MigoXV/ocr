@@ -8,7 +8,8 @@ from pydantic import TypeAdapter
 from ocr.types.ocr_results import OCRResult
 
 INPUT_PATH = "data-bin/inputs/test01.jpg"
-MODEL = "deepseek-ocr2"
+OCR_MODEL = "deepseek-ocr2-ux"
+TRANSLATE_MODEL = "tencent/Hunyuan-MT-7B"
 OCR_PROMPT = "OCR this image."
 TRANSLATE_LANGUAGE = "法语"
 TRANSLATE_CONCURRENCY = 4
@@ -61,7 +62,7 @@ async def translate_one(async_client: AsyncOpenAI, semaphore: asyncio.Semaphore,
                     {"role": "system", "content": translate_system_prompt},
                     {"role": "user", "content": text},
                 ],
-                model=MODEL,
+                model=TRANSLATE_MODEL,
             )
         except BadRequestError as exc:
             detail = str(exc)
@@ -104,7 +105,7 @@ async def main() -> None:
                     ],
                 }
             ],
-            model=MODEL,
+            model=OCR_MODEL,
             stream=True,
         )
 

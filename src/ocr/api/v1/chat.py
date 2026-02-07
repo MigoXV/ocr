@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_TARGET_LANGUAGE = "法语"
 DEFAULT_PROMPT_PARSE_MODEL = "Qwen/Qwen3-8B"
+OCR_UX_MODEL = "deepseek-ocr2-ux"
 
 
 @router.post("/v1/chat/completions", response_model=None)
@@ -32,27 +33,22 @@ async def create_chat_completion(
         user_text = _extract_last_user_text(messages)
         system_text = _extract_last_system_text(messages)
         stream = bool(payload.get("stream"))
-        model = str(payload.get("model") or "deepseek-ocr2")
+        model = str(payload.get("model") or OCR_UX_MODEL)
+        request_mode = _resolve_request_mode(model)
+        should_translate = _should_translate(system_text=system_text, user_text=user_text)
 
-        task = await inferencer.resolve_chat_task(
-            user_prompt=user_text,
-            has_image=has_image,
-            system_prompt=system_text,
-            model=DEFAULT_PROMPT_PARSE_MODEL,
-        )
-
-        if not has_image:
-            if task != "translate":
+        if request_mode == "mt":
+            if has_image:
                 raise HTTPException(
                     status_code=400,
                     detail=(
-                        "No image provided and request is not a translation task. "
-                        "This endpoint does not support general chat."
+                        f"Model '{model}' is text MT only and does not support image input."
                     ),
                 )
             translated = await _run_translate_pipeline(
                 user_text=user_text,
                 system_text=system_text,
+                translate_model=model,
             )
             content = json.dumps([translated], ensure_ascii=False)
             if stream:
@@ -62,7 +58,16 @@ async def create_chat_completion(
                 )
             return _build_chat_completion(content=content, model=model)
 
-        if task == "ocr_translate":
+        # request_mode == "ocr_ux"
+        if not has_image:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Model '{OCR_UX_MODEL}' requires image input and supports only OCR/OCR+translate."
+                ),
+            )
+
+        if should_translate:
             if stream:
                 upstream_stream = await _create_upstream_stream(payload)
                 ocr_results = await _collect_ocr_results_from_stream(upstream_stream)
@@ -87,7 +92,7 @@ async def create_chat_completion(
             content = _serialize_ocr_results(translated)
             return _build_chat_completion(content=content, model=model)
 
-        # Default: OCR pipeline
+        # OCR pipeline
         if stream:
             upstream_stream = await _create_upstream_stream(payload)
             return StreamingResponse(
@@ -121,6 +126,27 @@ def _require_messages(payload: dict[str, Any]) -> list[dict[str, Any]]:
     if not isinstance(messages, list):
         raise HTTPException(status_code=400, detail="messages must be a list.")
     return [msg for msg in messages if isinstance(msg, dict)]
+
+
+def _resolve_request_mode(model: str) -> str:
+    normalized = (model or "").strip()
+    if normalized == OCR_UX_MODEL:
+        return "ocr_ux"
+    if "-MT" in normalized.upper():
+        return "mt"
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            f"Unsupported model '{model}'. Use '{OCR_UX_MODEL}' for OCR/OCR+translate, "
+            "or a model containing '-MT' for text machine translation."
+        ),
+    )
+
+
+def _should_translate(system_text: str, user_text: str) -> bool:
+    if inferencer.parse_translate_command(system_text):
+        return True
+    return inferencer.parse_translate_command(user_text) is not None
 
 
 def _has_image(messages: list[dict[str, Any]]) -> bool:
@@ -202,7 +228,11 @@ def _serialize_ocr_results(ocr_results: OCRResults) -> str:
     )
 
 
-async def _run_translate_pipeline(user_text: str, system_text: str) -> str:
+async def _run_translate_pipeline(
+    user_text: str,
+    system_text: str,
+    translate_model: str | None = None,
+) -> str:
     parsed = inferencer.parse_translate_command(user_text)
     source_text = user_text
     if parsed:
@@ -219,6 +249,7 @@ async def _run_translate_pipeline(user_text: str, system_text: str) -> str:
     return await inferencer.translate_text(
         text=source_text,
         target_language=target_language,
+        model=translate_model,
     )
 
 
