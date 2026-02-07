@@ -11,7 +11,7 @@ from ocr.inferencers import OpenAIOCRInferencer
 from ocr.inferencers.ocr_parser import get_plain_text, parse_plain_text, parse_raw_str
 
 DEFAULT_OCR_MODEL = "deepseek-ocr2"
-DEFAULT_TRANSLATE_MODEL = "tencent/Hunyuan-MT-7B"
+DEFAULT_TRANSLATE_MODEL = "MedAIBase/Tencent-HY-MT1.5:7b"
 DEFAULT_PROMPT_PARSE_MODEL = "Qwen/Qwen3-8B"
 DEFAULT_TARGET_LANGUAGE = "法语"
 

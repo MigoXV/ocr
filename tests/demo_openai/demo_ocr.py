@@ -22,7 +22,7 @@ from ocr.utils import (
 # OCR API 服务地址
 
 # # 翻译 API 服务地址（新的 OpenAI 客户端实例）
-TRANSLATE_MODEL = "tencent/Hunyuan-MT-7B"  # 翻译使用的模型
+TRANSLATE_MODEL = "MedAIBase/Tencent-HY-MT1.5:7b"  # 翻译使用的模型
 TARGET_LANGUAGE = "法语"  # 目标翻译语言
 
 # 输入图片路径

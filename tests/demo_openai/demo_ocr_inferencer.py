@@ -13,7 +13,7 @@ from ocr.inferencers import OpenAIOCRInferencer
 from ocr.inferencers.ocr_parser import get_plain_text, parse_plain_text, parse_raw_str
 from ocr.utils import load_image
 
-TRANSLATE_MODEL = "tencent/Hunyuan-MT-7B"
+TRANSLATE_MODEL = "MedAIBase/Tencent-HY-MT1.5:7b"
 TARGET_LANGUAGE = "法语"
 INPUT_PATH = "data-bin/inputs/test01.jpg"
 OUTPUT_PATH = "data-bin/test-deepseek-ocr-inferencer" + time.strftime(
