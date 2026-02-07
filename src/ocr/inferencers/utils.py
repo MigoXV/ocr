@@ -1,8 +1,11 @@
+import base64
 import json
+import re
 import time
 from typing import Any, AsyncIterator
 
 from openai.types.chat import ChatCompletionMessageParam
+from openai.types.chat.chat_completion import ChatCompletion
 
 from ocr.types.ocr_results import OCRResults
 
@@ -135,3 +138,70 @@ def _format_chunk_content(chunk_id: str, created: int, model: str, content: str)
         ],
     }
     return f"data: {json.dumps(payload, ensure_ascii=False)}\\n\\n"
+
+
+def parse_translate_command(user_prompt: str) -> tuple[str, str] | None:
+    """
+    Parse '/translate <language>' command at the beginning of prompt.
+    Returns (language, content_after_command) when matched, else None.
+    """
+    if not user_prompt:
+        return None
+    match = re.match(
+        r"^\s*/translate\s+([^\s]+)(?:\s+([\s\S]*))?\s*$",
+        user_prompt,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return None
+    language = (match.group(1) or "").strip()
+    content = (match.group(2) or "").strip()
+    if not language:
+        return None
+    return language, content
+
+
+def resolve_request_mode(model: str, ocr_ux_model: str) -> str:
+    normalized = (model or "").strip()
+    if normalized == ocr_ux_model:
+        return "ocr_ux"
+    if "-MT" in normalized.upper():
+        return "mt"
+    raise ValueError(
+        f"Unsupported model '{model}'. Use '{ocr_ux_model}' for OCR/OCR+translate, "
+        "or a model containing '-MT' for text machine translation."
+    )
+
+
+def map_upstream_model(model: str, ocr_ux_model: str, internal_ocr_model: str) -> str:
+    if model == ocr_ux_model:
+        return internal_ocr_model
+    return model
+
+
+def extract_completion_text(response: ChatCompletion) -> str:
+    if not response.choices:
+        return ""
+    message = response.choices[0].message
+    content = message.content if message else None
+    if not isinstance(content, str):
+        return ""
+    return content
+
+
+def bytes_to_data_uri(image_bytes: bytes) -> str:
+    mime_type = detect_mime_type(image_bytes)
+    base64_data = base64.b64encode(image_bytes).decode("utf-8")
+    return f"data:{mime_type};base64,{base64_data}"
+
+
+def detect_mime_type(image_bytes: bytes) -> str:
+    if image_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if image_bytes.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if image_bytes.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if image_bytes.startswith(b"RIFF") and image_bytes[8:12] == b"WEBP":
+        return "image/webp"
+    return "image/png"

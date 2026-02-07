@@ -1,7 +1,5 @@
-import base64
 import json
 import logging
-import re
 from typing import Any, AsyncIterator, Literal, Optional
 
 from openai import AsyncOpenAI
@@ -14,12 +12,17 @@ from ocr.types.ocr_results import OCRResult, OCRResults
 from .ocr_parser import parse_raw_str, parse_raw_str_stream
 from .prompts import build_translate_system_prompt
 from .utils import (
+    bytes_to_data_uri,
     build_chat_completion,
+    extract_completion_text,
     extract_last_role_text,
     has_image,
     iter_json_array_sse,
     iter_ocr_item_jsons,
     iter_single_json_item,
+    map_upstream_model,
+    parse_translate_command,
+    resolve_request_mode,
     serialize_ocr_results,
 )
 
@@ -59,7 +62,7 @@ class OpenAIOCRInferencer:
         has_image_input = has_image(messages)
         user_text = extract_last_role_text(messages, role="user")
         system_text = extract_last_role_text(messages, role="system")
-        request_mode = self._resolve_request_mode(model)
+        request_mode = resolve_request_mode(model, ocr_ux_model=OCR_UX_MODEL)
         should_translate = self._should_translate(
             system_text=system_text,
             user_text=user_text,
@@ -109,7 +112,7 @@ class OpenAIOCRInferencer:
                 model=model,
                 max_tokens=max_tokens,
             )
-            raw_text = self._extract_completion_text(upstream_response)
+            raw_text = extract_completion_text(upstream_response)
             ocr_results = parse_raw_str(raw_text)
             translated = await self._translate_ocr_results(
                 ocr_results=ocr_results,
@@ -135,7 +138,7 @@ class OpenAIOCRInferencer:
             model=model,
             max_tokens=max_tokens,
         )
-        raw_text = self._extract_completion_text(upstream_response)
+        raw_text = extract_completion_text(upstream_response)
         ocr_results = parse_raw_str(raw_text)
         content = serialize_ocr_results(ocr_results)
         return build_chat_completion(content=content, model=model)
@@ -145,7 +148,7 @@ class OpenAIOCRInferencer:
         if not image_bytes:
             raise ValueError("image_bytes cannot be empty")
 
-        image_url = self._bytes_to_data_uri(image_bytes)
+        image_url = bytes_to_data_uri(image_bytes)
         response = await self.client.chat.completions.create(
             messages=[
                 {
@@ -204,9 +207,9 @@ class OpenAIOCRInferencer:
         model: Optional[str] = None,
     ) -> str:
         del model
-        parsed = self.parse_translate_command(system_prompt or "")
+        parsed = parse_translate_command(system_prompt or "")
         if not parsed:
-            parsed = self.parse_translate_command(user_prompt)
+            parsed = parse_translate_command(user_prompt)
         if not parsed:
             return default_language
         language, _ = parsed
@@ -224,33 +227,12 @@ class OpenAIOCRInferencer:
         if not prompt and not (system_prompt or "").strip():
             return "ocr" if has_image else "invalid"
 
-        is_translate = self.parse_translate_command(system_prompt or "") is not None
+        is_translate = parse_translate_command(system_prompt or "") is not None
         if not is_translate:
-            is_translate = self.parse_translate_command(prompt) is not None
+            is_translate = parse_translate_command(prompt) is not None
         if has_image:
             return "ocr_translate" if is_translate else "ocr"
         return "translate" if is_translate else "invalid"
-
-    @staticmethod
-    def parse_translate_command(user_prompt: str) -> Optional[tuple[str, str]]:
-        """
-        Parse '/translate <language>' command at the beginning of prompt.
-        Returns (language, content_after_command) when matched, else None.
-        """
-        if not user_prompt:
-            return None
-        match = re.match(
-            r"^\s*/translate\s+([^\s]+)(?:\s+([\s\S]*))?\s*$",
-            user_prompt,
-            flags=re.IGNORECASE,
-        )
-        if not match:
-            return None
-        language = (match.group(1) or "").strip()
-        content = (match.group(2) or "").strip()
-        if not language:
-            return None
-        return language, content
 
     async def summarize_translation_context(
         self,
@@ -324,7 +306,11 @@ class OpenAIOCRInferencer:
     ) -> AsyncIterator[ChatCompletionChunk]:
         kwargs: dict[str, Any] = {
             "messages": messages,
-            "model": self._map_upstream_model(model),
+            "model": map_upstream_model(
+                model,
+                ocr_ux_model=OCR_UX_MODEL,
+                internal_ocr_model=INTERNAL_OCR_MODEL,
+            ),
             "stream": True,
         }
         if max_tokens is not None:
@@ -339,45 +325,21 @@ class OpenAIOCRInferencer:
     ) -> ChatCompletion:
         kwargs: dict[str, Any] = {
             "messages": messages,
-            "model": self._map_upstream_model(model),
+            "model": map_upstream_model(
+                model,
+                ocr_ux_model=OCR_UX_MODEL,
+                internal_ocr_model=INTERNAL_OCR_MODEL,
+            ),
             "stream": False,
         }
         if max_tokens is not None:
             kwargs["max_tokens"] = max_tokens
         return await self.client.chat.completions.create(**kwargs)
 
-    @staticmethod
-    def _resolve_request_mode(model: str) -> str:
-        normalized = (model or "").strip()
-        if normalized == OCR_UX_MODEL:
-            return "ocr_ux"
-        if "-MT" in normalized.upper():
-            return "mt"
-        raise ValueError(
-            f"Unsupported model '{model}'. Use '{OCR_UX_MODEL}' for OCR/OCR+translate, "
-            "or a model containing '-MT' for text machine translation."
-        )
-
     def _should_translate(self, system_text: str, user_text: str) -> bool:
-        if self.parse_translate_command(system_text):
+        if parse_translate_command(system_text):
             return True
-        return self.parse_translate_command(user_text) is not None
-
-    @staticmethod
-    def _map_upstream_model(model: str) -> str:
-        if model == OCR_UX_MODEL:
-            return INTERNAL_OCR_MODEL
-        return model
-
-    @staticmethod
-    def _extract_completion_text(response: ChatCompletion) -> str:
-        if not response.choices:
-            return ""
-        message = response.choices[0].message
-        content = message.content if message else None
-        if not isinstance(content, str):
-            return ""
-        return content
+        return parse_translate_command(user_text) is not None
 
     async def _run_translate_pipeline(
         self,
@@ -385,7 +347,7 @@ class OpenAIOCRInferencer:
         system_text: str,
         translate_model: str | None = None,
     ) -> str:
-        parsed = self.parse_translate_command(user_text)
+        parsed = parse_translate_command(user_text)
         source_text = user_text
         if parsed:
             source_text = parsed[1]
@@ -469,21 +431,3 @@ class OpenAIOCRInferencer:
     ) -> AsyncIterator[str]:
         async for item in parse_raw_str_stream(self._iter_ocr_text(chunks)):
             yield json.dumps(item.model_dump(mode="json"), ensure_ascii=False)
-
-    @staticmethod
-    def _bytes_to_data_uri(image_bytes: bytes) -> str:
-        mime_type = OpenAIOCRInferencer._detect_mime_type(image_bytes)
-        base64_data = base64.b64encode(image_bytes).decode("utf-8")
-        return f"data:{mime_type};base64,{base64_data}"
-
-    @staticmethod
-    def _detect_mime_type(image_bytes: bytes) -> str:
-        if image_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
-            return "image/png"
-        if image_bytes.startswith(b"\xff\xd8\xff"):
-            return "image/jpeg"
-        if image_bytes.startswith((b"GIF87a", b"GIF89a")):
-            return "image/gif"
-        if image_bytes.startswith(b"RIFF") and image_bytes[8:12] == b"WEBP":
-            return "image/webp"
-        return "image/png"
