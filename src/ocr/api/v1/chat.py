@@ -35,6 +35,7 @@ Inferencer = OpenAIOCRInferencer
 def get_inferencer() -> Inferencer:
     return _default_inferencer
 
+
 @router.post("/v1/chat/completions", response_model=None)
 async def create_chat_completion(
     inferencer: Annotated[Inferencer, Depends(get_inferencer)],
@@ -50,15 +51,9 @@ async def create_chat_completion(
         user_text = _extract_last_user_text(messages)
         system_text = _extract_last_system_text(messages)
         request_mode = _resolve_request_mode(model)
-        should_translate = _should_translate(inferencer, system_text=system_text, user_text=user_text)
-
-        request_payload: dict[str, Any] = {
-            "messages": messages,
-            "model": model,
-            "stream": stream,
-        }
-        if max_tokens is not None:
-            request_payload["max_tokens"] = max_tokens
+        should_translate = _should_translate(
+            inferencer, system_text=system_text, user_text=user_text
+        )
 
         if request_mode == "mt":
             if has_image:
@@ -77,7 +72,9 @@ async def create_chat_completion(
             content = json.dumps([translated], ensure_ascii=False)
             if stream:
                 return StreamingResponse(
-                    _iter_json_array_sse(_iter_single_json_item(translated), model=model),
+                    _iter_json_array_sse(
+                        _iter_single_json_item(translated), model=model
+                    ),
                     media_type="text/event-stream",
                 )
             return _build_chat_completion(content=content, model=model)
@@ -93,7 +90,11 @@ async def create_chat_completion(
 
         if should_translate:
             if stream:
-                upstream_stream = await _create_upstream_stream(request_payload)
+                upstream_stream = await _create_upstream_stream(
+                    messages=messages,
+                    model=model,
+                    max_tokens=max_tokens,
+                )
                 ocr_results = await _collect_ocr_results_from_stream(upstream_stream)
                 translated = await _translate_ocr_results(
                     inferencer=inferencer,
@@ -106,7 +107,11 @@ async def create_chat_completion(
                     media_type="text/event-stream",
                 )
 
-            upstream_response = await _create_upstream_non_stream(request_payload)
+            upstream_response = await _create_upstream_non_stream(
+                messages=messages,
+                model=model,
+                max_tokens=max_tokens,
+            )
             raw_text = _extract_completion_text(upstream_response)
             ocr_results = parse_raw_str(raw_text)
             translated = await _translate_ocr_results(
@@ -120,13 +125,23 @@ async def create_chat_completion(
 
         # OCR pipeline
         if stream:
-            upstream_stream = await _create_upstream_stream(request_payload)
+            upstream_stream = await _create_upstream_stream(
+                messages=messages,
+                model=model,
+                max_tokens=max_tokens,
+            )
             return StreamingResponse(
-                _iter_json_array_sse(_iter_ocr_item_jsons_from_stream(upstream_stream), model=model),
+                _iter_json_array_sse(
+                    _iter_ocr_item_jsons_from_stream(upstream_stream), model=model
+                ),
                 media_type="text/event-stream",
             )
 
-        upstream_response = await _create_upstream_non_stream(request_payload)
+        upstream_response = await _create_upstream_non_stream(
+            messages=messages,
+            model=model,
+            max_tokens=max_tokens,
+        )
         raw_text = _extract_completion_text(upstream_response)
         ocr_results = parse_raw_str(raw_text)
         content = _serialize_ocr_results(ocr_results)
@@ -223,19 +238,33 @@ def _extract_last_system_text(messages: list[ChatCompletionMessageParam]) -> str
 
 
 async def _create_upstream_stream(
-    payload: dict[str, Any],
+    messages: list[ChatCompletionMessageParam],
+    model: str,
+    max_tokens: Optional[int] = None,
 ) -> AsyncIterator[ChatCompletionChunk]:
-    request_payload = dict(payload)
-    request_payload["stream"] = True
-    request_payload["model"] = _map_upstream_model(str(payload.get("model") or OCR_UX_MODEL))
-    return await client.chat.completions.create(**request_payload)
+    kwargs: dict[str, Any] = {
+        "messages": messages,
+        "model": _map_upstream_model(model),
+        "stream": True,
+    }
+    if max_tokens is not None:
+        kwargs["max_tokens"] = max_tokens
+    return await client.chat.completions.create(**kwargs)
 
 
-async def _create_upstream_non_stream(payload: dict[str, Any]) -> ChatCompletion:
-    request_payload = dict(payload)
-    request_payload["stream"] = False
-    request_payload["model"] = _map_upstream_model(str(payload.get("model") or OCR_UX_MODEL))
-    return await client.chat.completions.create(**request_payload)
+async def _create_upstream_non_stream(
+    messages: list[ChatCompletionMessageParam],
+    model: str,
+    max_tokens: Optional[int] = None,
+) -> ChatCompletion:
+    kwargs: dict[str, Any] = {
+        "messages": messages,
+        "model": _map_upstream_model(model),
+        "stream": False,
+    }
+    if max_tokens is not None:
+        kwargs["max_tokens"] = max_tokens
+    return await client.chat.completions.create(**kwargs)
 
 
 def _map_upstream_model(model: str) -> str:
@@ -336,7 +365,9 @@ async def _translate_ocr_results(
     return translated
 
 
-async def _iter_ocr_text(chunks: AsyncIterator[ChatCompletionChunk]) -> AsyncIterator[str]:
+async def _iter_ocr_text(
+    chunks: AsyncIterator[ChatCompletionChunk],
+) -> AsyncIterator[str]:
     async for chunk in chunks:
         if not chunk.choices:
             continue
