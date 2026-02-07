@@ -40,23 +40,8 @@ async def create_chat_completion(
     inferencer: Annotated[Inferencer, Depends(get_inferencer)],
     messages: Annotated[list[ChatCompletionMessageParam], Body(..., embed=True)],
     model: Annotated[str, Body(..., embed=True)],
-    audio: Annotated[Optional[ChatCompletionAudioParam], Body(embed=True)] = None,
-    tools: Annotated[Optional[list[ChatCompletionToolUnionParam]], Body(embed=True)] = None,
-    frequency_penalty: Annotated[Optional[float], Body(embed=True)] = None,
-    temperature: Annotated[Optional[float], Body(embed=True)] = None,
     max_tokens: Annotated[Optional[int], Body(embed=True)] = None,
     stream: Annotated[bool, Body(embed=True)] = False,
-    top_p: Annotated[Optional[float], Body(embed=True)] = None,
-    presence_penalty: Annotated[Optional[float], Body(embed=True)] = None,
-    n: Annotated[Optional[int], Body(embed=True)] = None,
-    stop: Annotated[Optional[str | list[str]], Body(embed=True)] = None,
-    logprobs: Annotated[Optional[bool], Body(embed=True)] = None,
-    top_logprobs: Annotated[Optional[int], Body(embed=True)] = None,
-    seed: Annotated[Optional[int], Body(embed=True)] = None,
-    user: Annotated[Optional[str], Body(embed=True)] = None,
-    tool_choice: Annotated[Optional[Any], Body(embed=True)] = None,
-    response_format: Annotated[Optional[dict[str, Any]], Body(embed=True)] = None,
-    stream_options: Annotated[Optional[dict[str, Any]], Body(embed=True)] = None,
 ) -> Any:
     try:
         if not messages:
@@ -72,38 +57,8 @@ async def create_chat_completion(
             "model": model,
             "stream": stream,
         }
-        if audio is not None:
-            request_payload["audio"] = audio
-        if tools:
-            request_payload["tools"] = tools
-        if frequency_penalty is not None:
-            request_payload["frequency_penalty"] = frequency_penalty
-        if temperature is not None:
-            request_payload["temperature"] = temperature
         if max_tokens is not None:
             request_payload["max_tokens"] = max_tokens
-        if top_p is not None:
-            request_payload["top_p"] = top_p
-        if presence_penalty is not None:
-            request_payload["presence_penalty"] = presence_penalty
-        if n is not None:
-            request_payload["n"] = n
-        if stop is not None:
-            request_payload["stop"] = stop
-        if logprobs is not None:
-            request_payload["logprobs"] = logprobs
-        if top_logprobs is not None:
-            request_payload["top_logprobs"] = top_logprobs
-        if seed is not None:
-            request_payload["seed"] = seed
-        if user is not None:
-            request_payload["user"] = user
-        if tool_choice is not None:
-            request_payload["tool_choice"] = tool_choice
-        if response_format is not None:
-            request_payload["response_format"] = response_format
-        if stream_options is not None:
-            request_payload["stream_options"] = stream_options
 
         if request_mode == "mt":
             if has_image:
