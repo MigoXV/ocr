@@ -37,7 +37,10 @@ async def create_chat_completion(
         except (IndexError, TypeError, KeyError, AttributeError) as exc:
             raise HTTPException(
                 status_code=400,
-                detail="Invalid messages format. Expected fixed system/user template.",
+                detail=(
+                    "Invalid messages format. OCR expects one user message; "
+                    "translation expects one system and one user message."
+                ),
             ) from exc
         if stream:
             return StreamingResponse(response, media_type="text/event-stream")

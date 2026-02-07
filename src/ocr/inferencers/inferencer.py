@@ -58,8 +58,12 @@ class OpenAIOCRInferencer:
     ) -> dict[str, Any] | AsyncIterator[str]:
         has_image_input = has_image(messages)
         request_mode = resolve_request_mode(model, ocr_ux_model=OCR_UX_MODEL)
-        system_text = extract_message_text(messages[0])
-        user_text = extract_message_text(messages[1])
+        if request_mode == "ocr_ux" and len(messages) == 1:
+            system_text = ""
+            user_text = extract_message_text(messages[0])
+        else:
+            system_text = extract_message_text(messages[0])
+            user_text = extract_message_text(messages[1])
         should_translate = self._should_translate(
             system_text=system_text,
             user_text=user_text,
