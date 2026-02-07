@@ -82,10 +82,13 @@ class OpenAIOCRInferencer:
         self,
         user_prompt: str,
         default_language: str,
+        system_prompt: Optional[str] = None,
         model: Optional[str] = None,
     ) -> str:
         del model
-        parsed = self.parse_translate_command(user_prompt)
+        parsed = self.parse_translate_command(system_prompt or "")
+        if not parsed:
+            parsed = self.parse_translate_command(user_prompt)
         if not parsed:
             return default_language
         language, _ = parsed
@@ -95,14 +98,17 @@ class OpenAIOCRInferencer:
         self,
         user_prompt: str,
         has_image: bool,
+        system_prompt: Optional[str] = None,
         model: Optional[str] = None,
     ) -> Literal["ocr", "ocr_translate", "translate", "invalid"]:
         del model
         prompt = user_prompt.strip()
-        if not prompt:
+        if not prompt and not (system_prompt or "").strip():
             return "ocr" if has_image else "invalid"
 
-        is_translate = self.parse_translate_command(prompt) is not None
+        is_translate = self.parse_translate_command(system_prompt or "") is not None
+        if not is_translate:
+            is_translate = self.parse_translate_command(prompt) is not None
         if has_image:
             return "ocr_translate" if is_translate else "ocr"
         return "translate" if is_translate else "invalid"

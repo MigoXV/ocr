@@ -52,12 +52,15 @@ def parse_translate_output(output: str) -> str:
 
 
 async def translate_one(async_client: AsyncOpenAI, semaphore: asyncio.Semaphore, idx: int, text: str) -> tuple[int, str]:
-    primary_prompt = f"/translate {TRANSLATE_LANGUAGE} {text}"
+    translate_system_prompt = f"/translate {TRANSLATE_LANGUAGE}"
 
     async with semaphore:
         try:
             response = await async_client.chat.completions.create(
-                messages=[{"role": "user", "content": primary_prompt}],
+                messages=[
+                    {"role": "system", "content": translate_system_prompt},
+                    {"role": "user", "content": text},
+                ],
                 model=MODEL,
             )
         except BadRequestError as exc:

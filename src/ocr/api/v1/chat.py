@@ -30,12 +30,14 @@ async def create_chat_completion(
         messages = _require_messages(payload)
         has_image = _has_image(messages)
         user_text = _extract_last_user_text(messages)
+        system_text = _extract_last_system_text(messages)
         stream = bool(payload.get("stream"))
         model = str(payload.get("model") or "deepseek-ocr2")
 
         task = await inferencer.resolve_chat_task(
             user_prompt=user_text,
             has_image=has_image,
+            system_prompt=system_text,
             model=DEFAULT_PROMPT_PARSE_MODEL,
         )
 
@@ -48,7 +50,10 @@ async def create_chat_completion(
                         "This endpoint does not support general chat."
                     ),
                 )
-            translated = await _run_translate_pipeline(user_text=user_text)
+            translated = await _run_translate_pipeline(
+                user_text=user_text,
+                system_text=system_text,
+            )
             content = json.dumps([translated], ensure_ascii=False)
             if stream:
                 return StreamingResponse(
@@ -61,7 +66,11 @@ async def create_chat_completion(
             if stream:
                 upstream_stream = await _create_upstream_stream(payload)
                 ocr_results = await _collect_ocr_results_from_stream(upstream_stream)
-                translated = await _translate_ocr_results(ocr_results, user_text=user_text)
+                translated = await _translate_ocr_results(
+                    ocr_results,
+                    user_text=user_text,
+                    system_text=system_text,
+                )
                 return StreamingResponse(
                     _iter_json_array_sse(_iter_ocr_item_jsons(translated), model=model),
                     media_type="text/event-stream",
@@ -70,7 +79,11 @@ async def create_chat_completion(
             upstream_response = await _create_upstream_non_stream(payload)
             raw_text = _extract_completion_text(upstream_response)
             ocr_results = parse_raw_str(raw_text)
-            translated = await _translate_ocr_results(ocr_results, user_text=user_text)
+            translated = await _translate_ocr_results(
+                ocr_results,
+                user_text=user_text,
+                system_text=system_text,
+            )
             content = _serialize_ocr_results(translated)
             return _build_chat_completion(content=content, model=model)
 
@@ -139,6 +152,25 @@ def _extract_last_user_text(messages: list[dict[str, Any]]) -> str:
     return ""
 
 
+def _extract_last_system_text(messages: list[dict[str, Any]]) -> str:
+    for message in reversed(messages):
+        if message.get("role") != "system":
+            continue
+        content = message.get("content")
+        if isinstance(content, str):
+            return content.strip()
+        if isinstance(content, list):
+            parts: list[str] = []
+            for part in content:
+                if isinstance(part, dict) and part.get("type") == "text":
+                    text = part.get("text")
+                    if isinstance(text, str):
+                        parts.append(text)
+            joined = "\n".join(part for part in parts if part.strip())
+            return joined.strip()
+    return ""
+
+
 async def _create_upstream_stream(
     payload: dict[str, Any],
 ) -> AsyncIterator[ChatCompletionChunk]:
@@ -170,15 +202,18 @@ def _serialize_ocr_results(ocr_results: OCRResults) -> str:
     )
 
 
-async def _run_translate_pipeline(user_text: str) -> str:
+async def _run_translate_pipeline(user_text: str, system_text: str) -> str:
     parsed = inferencer.parse_translate_command(user_text)
-    source_text = parsed[1] if parsed else user_text
+    source_text = user_text
+    if parsed:
+        source_text = parsed[1]
     if not source_text.strip():
         source_text = user_text
 
     target_language = await inferencer.resolve_target_language(
         user_prompt=user_text,
         default_language=DEFAULT_TARGET_LANGUAGE,
+        system_prompt=system_text,
         model=DEFAULT_PROMPT_PARSE_MODEL,
     )
     return await inferencer.translate_text(
@@ -199,10 +234,12 @@ async def _collect_ocr_results_from_stream(
 async def _translate_ocr_results(
     ocr_results: OCRResults,
     user_text: str,
+    system_text: str,
 ) -> OCRResults:
     target_language = await inferencer.resolve_target_language(
         user_prompt=user_text,
         default_language=DEFAULT_TARGET_LANGUAGE,
+        system_prompt=system_text,
         model=DEFAULT_PROMPT_PARSE_MODEL,
     )
     full_context = "\n".join(item.ref for item in ocr_results)
