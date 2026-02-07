@@ -21,6 +21,7 @@ dependencies = [
     "typer (>=0.20.0,<0.21.0)",
     "omegaconf (>=2.3.0,<3.0.0)",
     "opencv-python-headless (>=4.13.0.92,<5.0.0.0)",
+    "pillow (>=12.1.0,<13.0.0)",
 ]
 
 [tool.poetry]
