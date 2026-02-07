@@ -52,23 +52,13 @@ class OpenAIOCRInferencer:
         self,
         text: str,
         target_language: str,
-        full_context: Optional[str] = None,
         model: Optional[str] = None,
         temperature: float = 0.3,
         max_tokens: int = 1024,
     ) -> Iterator[str]:
-        """Translate text and yield streamed translation chunks."""
-        if not text or len(text.strip()) == 0:
-            return
-
-        translate_model = model or self.translate_model
-        system_prompt = build_translate_system_prompt(
-            target_language=target_language,
-            full_context=full_context,
-        )
-
+        system_prompt = build_translate_system_prompt(target_language=target_language)
         response = self.client.chat.completions.create(
-            model=translate_model,
+            model=model if model else self.translate_model,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": text},
@@ -77,7 +67,6 @@ class OpenAIOCRInferencer:
             max_tokens=max_tokens,
             stream=True,
         )
-
         for chunk in response:
             if not chunk.choices:
                 continue

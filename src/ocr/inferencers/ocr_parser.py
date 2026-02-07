@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import logging
 import re
+from typing import List
 
 import numpy as np
 
@@ -36,4 +37,20 @@ def parse_raw_str(raw_text: str) -> OCRResults:
             continue
         results.append(OCRResult(ref=ref.strip(), det=det))
 
+    return results
+
+
+def get_plain_text(ocr_results: OCRResults) -> str:
+    """Extract plain text from OCRResults."""
+    return "\n".join([item.ref for item in ocr_results])
+
+
+def parse_plain_text(plain_text: str, ocr_results: OCRResults) -> OCRResults:
+    """Parse plain text back into OCRResults format."""
+    text_list = plain_text.splitlines()
+    if len(text_list) != len(ocr_results):
+        raise ValueError("Plain text lines count must match OCR results count.")
+    results = []
+    for text, ocr_item in zip(text_list, ocr_results):
+        results.append(OCRResult(ref=text.strip(), det=ocr_item.det))
     return results
